@@ -59,11 +59,86 @@ class CoverageDensityMapper:
         pts : np.ndarray
             Array of shape (N, 2) with polygon vertices as (x, y).
         """
-        # convert to grid coordinates and clip
-        x = np.clip((pts[:, 0] - self.xmin) / self.dx, 0, self.resolution - 1)
-        y = np.clip((pts[:, 1] - self.ymin) / self.dy, 0, self.resolution - 1)
+        # Properly clip the polygon to the rectangular field bounds using
+        # Sutherland–Hodgman polygon clipping, then rasterize. Naively clipping
+        # vertices can yield degenerate shapes at the boundary and zero coverage.
+        pts = np.asarray(pts, float)
+        if pts.ndim != 2 or pts.shape[0] < 3:
+            return
+
+        def clip_poly(subject: np.ndarray, edge: str) -> np.ndarray:
+            if subject.size == 0:
+                return subject
+
+            def inside(p: np.ndarray) -> bool:
+                x, y = p
+                if edge == 'left':
+                    return x >= self.xmin
+                if edge == 'right':
+                    return x <= self.xmax
+                if edge == 'bottom':
+                    return y >= self.ymin
+                # edge == 'top'
+                return y <= self.ymax
+
+            def intersect(p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
+                x1, y1 = p1
+                x2, y2 = p2
+                if edge in ('left', 'right'):
+                    x_edge = self.xmin if edge == 'left' else self.xmax
+                    if x2 != x1:
+                        t = (x_edge - x1) / (x2 - x1)
+                    else:
+                        t = 0.0
+                    t = float(np.clip(t, 0.0, 1.0))
+                    y = y1 + t * (y2 - y1)
+                    x = x_edge
+                else:
+                    y_edge = self.ymin if edge == 'bottom' else self.ymax
+                    if y2 != y1:
+                        t = (y_edge - y1) / (y2 - y1)
+                    else:
+                        t = 0.0
+                    t = float(np.clip(t, 0.0, 1.0))
+                    x = x1 + t * (x2 - x1)
+                    y = y_edge
+                return np.array([x, y], dtype=float)
+
+            output: list[np.ndarray] = []
+            S = subject
+            prev = S[-1]
+            for curr in S:
+                if inside(curr):
+                    if inside(prev):
+                        output.append(curr)
+                    else:
+                        output.append(intersect(prev, curr))
+                        output.append(curr)
+                else:
+                    if inside(prev):
+                        output.append(intersect(prev, curr))
+                prev = curr
+            return np.asarray(output, dtype=float) if output else np.empty((0, 2), dtype=float)
+
+        poly = pts
+        for edge in ('left', 'right', 'bottom', 'top'):
+            poly = clip_poly(poly, edge)
+            if poly.size == 0:
+                return
+        if poly.shape[0] < 3:
+            return
+
+        # Convert to grid coordinates. Map to inclusive [0, res-1] so that
+        # shapes that reach the top/right boundary can still populate the last
+        # row/column when rasterized.
+        x = (poly[:, 0] - self.xmin) / self.dx
+        y = (poly[:, 1] - self.ymin) / self.dy
+        x = np.clip(x, 0, self.resolution - 1)
+        y = np.clip(y, 0, self.resolution - 1)
+
         rr, cc = polygon(y, x, self.coverage_count.shape)
-        self.coverage_count[rr, cc] += 1
+        if rr.size and cc.size:
+            self.coverage_count[rr, cc] += 1
 
     def add_polygon(self, points: np.ndarray | Iterable[Iterable[float]]) -> None:
         """Add a polygon to the coverage map.

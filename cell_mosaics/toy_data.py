@@ -10,7 +10,7 @@ def generate_example_neurons(
         field_size: int = 1000,
         cell_size_range: tuple[float, float] = (50, 150),
         polygon_type: str = "irregular",
-        seeds: int = 42,
+        seed: int = 42,
 ) -> list[np.ndarray]:
     """Generate synthetic polygonal neuron outlines.
 
