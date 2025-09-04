@@ -1,0 +1,12 @@
+[project]
+name = "cell-mosaics"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.6",
+    "scikit-image>=0.25.2",
+    "scipy>=1.16.1",
+    "scipy-stubs==1.16.1.1",
+]

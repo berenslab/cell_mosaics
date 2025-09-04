@@ -1,0 +1,13 @@
+.venv
+.idea
+.vscode
+
+# Cache
+__pycache__
+*.pyc
+.DS_Store
+.ipynb_checkpoints
+.mypy_cache
+.pytest_cache
+.cache
+*.sqlite3
