@@ -1,8 +1,7 @@
 """
-Skeliner‑mosaics
+cell‑mosaics
 ================
-Utilities to compute and plot retinal mosaic coverage maps, designed to work
-well together with the `skeliner` library for skeleton visualisation.
+Utilities to compute and plot retinal mosaic coverage maps.
 
 Quick start
 -----------
