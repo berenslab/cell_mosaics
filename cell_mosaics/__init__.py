@@ -15,6 +15,8 @@ from .coverage import CoverageDensityMapper
 from .plotting import plot_polygon
 from .toy_data import generate_example_neurons
 
+__version__ = "0.1.0"
+
 __all__ = [
     "CoverageDensityMapper",
     "generate_example_neurons",

@@ -1,16 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
 [project]
 name = "cell-mosaics"
 version = "0.1.0"
-description = "Add your description here"
+description = "Tools for computing and visualizing coverage density maps for cell outlines"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "berenslab" }
+]
 dependencies = [
-    "jupyter>=1.1.1",
     "matplotlib>=3.10.6",
     "scikit-image>=0.25.2",
     "scipy>=1.16.1",
-    "scipy-stubs==1.16.1.1",
-    "pytest>=8.2",
 ]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "jupyter>=1.1.1",
+  "scipy-stubs==1.16.1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/berenslab/cell_mosaics"
+Issues = "https://github.com/berenslab/cell_mosaics/issues"
 
 [tool.pytest.ini_options]
 minversion = "8.0"
