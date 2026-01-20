@@ -137,9 +137,9 @@ def plot_coverage(
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     if show_max_coverage:
-        ax.set_title(f'RGC Coverage Density Map (Max Coverage: {max_val})')
+        ax.set_title(f'Coverage Density Map (Max Coverage: {max_val})')
     else:
-        ax.set_title('RGC Coverage Density Map')
+        ax.set_title('Coverage Density Map')
     ax.set_aspect('equal')
 
     if extent is not None:
