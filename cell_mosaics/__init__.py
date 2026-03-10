@@ -12,6 +12,13 @@ Quick start
 >>> # fig, ax, _ = mapper.plot_coverage()
 """
 from .coverage import CoverageDensityMapper
+from .metrics import (
+    compute_centroids,
+    density_recovery_profile,
+    nearest_neighbor_distances,
+    nnd_statistics,
+    voronoi_analysis,
+)
 from .plotting import plot_polygon
 from .toy_data import generate_example_neurons
 
@@ -19,6 +26,11 @@ __version__ = "0.1.0"
 
 __all__ = [
     "CoverageDensityMapper",
+    "compute_centroids",
+    "density_recovery_profile",
     "generate_example_neurons",
+    "nearest_neighbor_distances",
+    "nnd_statistics",
     "plot_polygon",
+    "voronoi_analysis",
 ]
