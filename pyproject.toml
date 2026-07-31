@@ -7,7 +7,7 @@ name = "cell-mosaics"
 version = "0.1.2"
 description = "Tools for computing and visualizing coverage density maps for cell outlines"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
   { name = "berenslab" }
@@ -22,7 +22,7 @@ dependencies = [
 dev = [
   "pytest>=8.2",
   "jupyter>=1.1.1",
-  "scipy-stubs==1.16.1.1",
+  "scipy-stubs>=1.16.1.1",
 ]
 
 [project.urls]
