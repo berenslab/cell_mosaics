@@ -19,6 +19,7 @@ from .metrics import (
     nnd_statistics,
     voronoi_analysis,
 )
+from .permutation import label_permutation_test
 from .plotting import plot_polygon
 from .toy_data import generate_example_neurons
 
@@ -29,6 +30,7 @@ __all__ = [
     "compute_centroids",
     "density_recovery_profile",
     "generate_example_neurons",
+    "label_permutation_test",
     "nearest_neighbor_distances",
     "nnd_statistics",
     "plot_polygon",

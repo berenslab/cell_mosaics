@@ -42,7 +42,7 @@ def nearest_neighbor_distances(positions: np.ndarray) -> np.ndarray:
     return distances[:, 1]
 
 
-def nnd_statistics(positions: np.ndarray) -> dict:
+def nnd_statistics(positions: np.ndarray, interior_mask: np.ndarray | None = None) -> dict:
     """Compute NND summary statistics including the regularity index.
 
     The regularity index (RI) is defined as mean_NND / std_NND.
@@ -52,17 +52,27 @@ def nnd_statistics(positions: np.ndarray) -> dict:
     Parameters
     ----------
     positions : np.ndarray of shape (n_cells, 2)
+    interior_mask : np.ndarray of bool, shape (n_cells,), optional
+        Restrict the summary statistics (mean/std/RI/cv, and `nnd` in the
+        returned dict) to this subset of cells, while still computing every
+        cell's nearest neighbor against the *full* `positions` array. This
+        avoids underestimating NND for cells near a crop boundary whose true
+        nearest neighbor lies just outside it -- compute over the full field,
+        report only the interior. Defaults to using every position.
 
     Returns
     -------
     dict with keys
-        nnd : np.ndarray — per-cell nearest-neighbor distances
+        nnd : np.ndarray — per-cell nearest-neighbor distances (interior only,
+            if `interior_mask` is given)
         mean_nnd : float
         std_nnd : float
         regularity_index : float — mean / std
         cv : float — coefficient of variation (std / mean)
     """
     nnd = nearest_neighbor_distances(positions)
+    if interior_mask is not None:
+        nnd = nnd[interior_mask]
     mean = float(np.mean(nnd))
     std = float(np.std(nnd))
     return {
@@ -135,6 +145,7 @@ def density_recovery_profile(
 def voronoi_analysis(
     positions: np.ndarray,
     field_bounds: tuple[float, float, float, float] | None = None,
+    interior_mask: np.ndarray | None = None,
 ) -> dict:
     """Compute Voronoi tessellation and summarise domain areas.
 
@@ -146,8 +157,15 @@ def voronoi_analysis(
     ----------
     positions : np.ndarray of shape (n_cells, 2)
     field_bounds : (xmin, xmax, ymin, ymax) or None
-        If provided, cells within one mean-cell-length of each boundary edge
-        are excluded.
+        If provided (and `interior_mask` is not), cells within one
+        mean-cell-length of each boundary edge are excluded.
+    interior_mask : np.ndarray of bool, shape (n_cells,), optional
+        Explicit interior selection (e.g. a fixed stable-sampling crop box),
+        used instead of the automatic `field_bounds` margin. The Voronoi
+        tessellation itself still uses the *full* `positions` array, so
+        interior cells get correct neighbors/areas from cells just outside
+        the mask -- only the summary statistics are restricted. Cells with an
+        infinite (unbounded) region are always excluded regardless.
 
     Returns
     -------
@@ -169,11 +187,13 @@ def voronoi_analysis(
             verts = vor.vertices[region]
             areas[i] = _polygon_area(verts)
 
-    if field_bounds is not None:
+    if interior_mask is not None:
+        resolved_interior_mask = np.asarray(interior_mask, dtype=bool) & ~np.isnan(areas)
+    elif field_bounds is not None:
         xmin, xmax, ymin, ymax = field_bounds
         field_area = (xmax - xmin) * (ymax - ymin)
         margin = np.sqrt(field_area / len(positions))  # ≈ one cell length
-        interior_mask = (
+        resolved_interior_mask = (
             ~np.isnan(areas)
             & (positions[:, 0] > xmin + margin)
             & (positions[:, 0] < xmax - margin)
@@ -181,9 +201,9 @@ def voronoi_analysis(
             & (positions[:, 1] < ymax - margin)
         )
     else:
-        interior_mask = ~np.isnan(areas)
+        resolved_interior_mask = ~np.isnan(areas)
 
-    interior_areas = areas[interior_mask]
+    interior_areas = areas[resolved_interior_mask]
     n = len(interior_areas)
     mean = float(np.mean(interior_areas)) if n > 0 else np.nan
     std = float(np.std(interior_areas)) if n > 0 else np.nan
@@ -194,7 +214,7 @@ def voronoi_analysis(
         "std_area": std,
         "cv_area": std / mean if mean > 0 else np.nan,
         "regularity_index": mean / std if std > 0 else np.inf,
-        "n_interior": int(np.sum(interior_mask)),
+        "n_interior": int(np.sum(resolved_interior_mask)),
     }
 
 
