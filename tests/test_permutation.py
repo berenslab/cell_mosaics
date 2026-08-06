@@ -109,6 +109,75 @@ class TestLabelPermutationTest:
         )
         assert result["regular"]["p_value"] < 0.1
 
+    def test_effective_radius_statistic_detects_exclusion_zone(self):
+        # Two interleaved regular mosaics: each has a real exclusion zone, so
+        # its DRP effective radius should exceed that of a random same-size
+        # subset of the (much denser) pooled population.
+        rng = np.random.default_rng(10)
+        grid_a = regular_grid(8, 20.0) + rng.normal(scale=0.5, size=(64, 2))
+        grid_b = regular_grid(8, 20.0) + np.array([10.0, 10.0]) + rng.normal(scale=0.5, size=(64, 2))
+
+        positions = np.vstack([grid_a, grid_b])
+        labels = np.array(["A"] * len(grid_a) + ["B"] * len(grid_b))
+        field_bounds = (positions[:, 0].min(), positions[:, 0].max(),
+                        positions[:, 1].min(), positions[:, 1].max())
+
+        result = label_permutation_test(
+            positions, labels, statistic="effective_radius", field_bounds=field_bounds,
+            n_permutations=300, seed=11,
+        )
+        for group in ("A", "B"):
+            assert result[group]["observed"] > 0
+            assert result[group]["p_value"] < 0.05
+
+    def test_effective_radius_p_values_calibrated_under_csr(self):
+        # A Poisson process split at random has no real exclusion zone, and the
+        # observed group is exchangeable with its own permutation null, so
+        # p-values must be roughly uniform rather than systematically small.
+        # Checked over several splits: any single split can land anywhere in
+        # [0, 1] by chance, so asserting on one seed would only test that seed.
+        p_values = []
+        for split in range(10):
+            rng = np.random.default_rng(1000 + split)
+            positions = rng.uniform(0, 300, (200, 2))
+            labels = rng.choice(["X", "Y"], size=len(positions))
+            result = label_permutation_test(
+                positions, labels, statistic="effective_radius", groups=["X"],
+                field_bounds=(0, 300, 0, 300), n_permutations=150, seed=split,
+            )
+            p_values.append(result["X"]["p_value"])
+
+        # Under uniform p-values the median sits near 0.5; a statistic that
+        # spuriously "finds" exclusion zones under CSR would push this to ~0.
+        assert np.median(p_values) > 0.15
+
+    def test_statistic_kwargs_forwarded_to_metric(self):
+        # max_radius changes the DRP binning, so it must reach the metric.
+        rng = np.random.default_rng(14)
+        positions = regular_grid(8, 20.0) + rng.normal(scale=0.5, size=(64, 2))
+        labels = np.array(["A"] * len(positions))
+        field_bounds = (positions[:, 0].min(), positions[:, 0].max(),
+                        positions[:, 1].min(), positions[:, 1].max())
+
+        common = dict(
+            statistic="effective_radius", field_bounds=field_bounds,
+            groups=["A"], n_permutations=5, seed=15,
+        )
+        default = label_permutation_test(positions, labels, **common)
+        narrow = label_permutation_test(
+            positions, labels, statistic_kwargs={'n_bins': 40, 'max_radius': 60.0}, **common)
+
+        assert default["A"]["observed"] != narrow["A"]["observed"]
+
+    def test_statistic_kwargs_rejected_by_metric_that_lacks_them(self):
+        positions = regular_grid(6, 10.0)
+        labels = np.array(["A"] * len(positions))
+        with pytest.raises(TypeError):
+            label_permutation_test(
+                positions, labels, groups=["A"], n_permutations=2,
+                statistic_kwargs={'max_radius': 50.0},  # regularity_index has no such param
+            )
+
     def test_unknown_statistic_raises(self):
         positions = regular_grid(4, 10.0)
         labels = np.array(["A"] * len(positions))

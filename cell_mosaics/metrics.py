@@ -117,6 +117,7 @@ def density_recovery_profile(
     n_bins: int = 20,
     max_radius: float | None = None,
     interior_mask: np.ndarray | None = None,
+    mean_density: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the Density Recovery Profile (DRP).
 
@@ -148,6 +149,20 @@ def density_recovery_profile(
         it -- mirrors the `interior_mask` parameter of `nnd_statistics` and
         `voronoi_analysis`. Defaults to using every position as a reference
         point (the original, uncorrected behaviour).
+    mean_density : float or None, optional
+        Density (cells per unit area) used as the CSR baseline the profile is
+        normalized against. Defaults to `len(positions) / field_area`.
+
+        Override this when `positions` and the reference cells cover regions
+        of *different* density, which is exactly the case when `positions` is
+        padded beyond `interior_mask` to give reference cells complete
+        neighbourhoods: the padding contributes to `len(positions)` and to
+        `field_area`, but the profile describes neighbourhoods around the
+        interior cells only. If the interior is denser than the padded region
+        (a well-sampled core inside a sparse periphery), the default baseline
+        is too low, so the profile settles above 1 instead of recovering to
+        it and the exclusion zone is understated. Passing the interior's own
+        density fixes both.
 
     Returns
     -------
@@ -157,7 +172,7 @@ def density_recovery_profile(
     xmin, xmax, ymin, ymax = field_bounds
     field_area = (xmax - xmin) * (ymax - ymin)
     n_cells = len(positions)
-    global_density = n_cells / field_area
+    global_density = n_cells / field_area if mean_density is None else mean_density
 
     if max_radius is None:
         max_radius = min(xmax - xmin, ymax - ymin) / 4.0
@@ -179,6 +194,7 @@ def drp_effective_radius(
     n_bins: int = 20,
     max_radius: float | None = None,
     interior_mask: np.ndarray | None = None,
+    mean_density: float | None = None,
 ) -> dict:
     """Quantify the DRP exclusion zone via Rodieck's (1991) effective radius.
 
@@ -207,8 +223,10 @@ def drp_effective_radius(
 
     Parameters
     ----------
-    positions, field_bounds, n_bins, max_radius, interior_mask
-        As per `density_recovery_profile`.
+    positions, field_bounds, n_bins, max_radius, interior_mask, mean_density
+        As per `density_recovery_profile`. `mean_density` sets the CSR
+        baseline that the deficit -- and hence r_e -- is measured against, so
+        override it whenever you would override it there.
 
     Returns
     -------
@@ -227,7 +245,8 @@ def drp_effective_radius(
     xmin, xmax, ymin, ymax = field_bounds
     field_area = (xmax - xmin) * (ymax - ymin)
     n_cells = len(positions)
-    mean_density = n_cells / field_area
+    if mean_density is None:
+        mean_density = n_cells / field_area
 
     if max_radius is None:
         max_radius = min(xmax - xmin, ymax - ymin) / 4.0

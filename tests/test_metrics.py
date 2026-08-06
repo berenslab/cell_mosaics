@@ -188,6 +188,55 @@ class TestDensityRecoveryProfile:
         np.testing.assert_allclose(centers_masked, centers_all)
         assert not np.allclose(drp_masked, drp_all)
 
+    def test_mean_density_override_scales_profile(self):
+        rng = np.random.default_rng(20)
+        positions = rng.uniform(0, 300, (150, 2))
+        bounds = (0.0, 300.0, 0.0, 300.0)
+
+        _, drp_default = density_recovery_profile(positions, bounds, n_bins=10, max_radius=75.0)
+        implied = len(positions) / ((300.0) * (300.0))
+        _, drp_doubled = density_recovery_profile(
+            positions, bounds, n_bins=10, max_radius=75.0, mean_density=2 * implied)
+
+        # The profile is a ratio to the baseline, so doubling it halves the curve.
+        np.testing.assert_allclose(drp_doubled, drp_default / 2)
+
+    def test_mean_density_override_matches_default_when_equal(self):
+        rng = np.random.default_rng(21)
+        positions = rng.uniform(0, 200, (90, 2))
+        bounds = (0.0, 200.0, 0.0, 200.0)
+
+        _, drp_default = density_recovery_profile(positions, bounds, n_bins=8, max_radius=50.0)
+        _, drp_explicit = density_recovery_profile(
+            positions, bounds, n_bins=8, max_radius=50.0,
+            mean_density=len(positions) / (200.0 * 200.0))
+
+        np.testing.assert_allclose(drp_explicit, drp_default)
+
+    def test_padded_positions_need_interior_density_to_recover_to_one(self):
+        # A dense core inside a sparse periphery: the core cells are the
+        # reference points, but `positions` is padded with the sparse
+        # surroundings so those references have complete neighbourhoods. The
+        # default baseline averages both densities and is therefore too low,
+        # pushing the profile above 1; the core's own density restores it.
+        rng = np.random.default_rng(22)
+        core = rng.uniform(200.0, 400.0, (400, 2))          # 200x200, dense
+        ring = rng.uniform(100.0, 500.0, (100, 2))          # 400x400, sparse
+        positions = np.vstack([core, ring])
+        interior = np.r_[np.ones(len(core), bool), np.zeros(len(ring), bool)]
+        padded_bounds = (100.0, 500.0, 100.0, 500.0)
+
+        _, drp_default = density_recovery_profile(
+            positions, padded_bounds, n_bins=10, max_radius=40.0, interior_mask=interior)
+        _, drp_local = density_recovery_profile(
+            positions, padded_bounds, n_bins=10, max_radius=40.0, interior_mask=interior,
+            mean_density=len(core) / (200.0 * 200.0))
+
+        # Random points have no exclusion zone, so a correctly normalised
+        # profile sits at ~1; the default one is inflated well above it.
+        assert drp_default[-4:].mean() > 1.5
+        np.testing.assert_allclose(drp_local[-4:].mean(), 1.0, atol=0.25)
+
 
 # ---------------------------------------------------------------------------
 # drp_effective_radius
@@ -207,6 +256,21 @@ class TestDrpEffectiveRadius:
             "cumulative_expected",
         }
         assert expected <= set(result)
+
+    def test_mean_density_override_reported_and_increases_radius(self):
+        # A higher CSR baseline means more neighbours are "expected", so the
+        # same observed counts imply a larger deficit and a larger r_e.
+        rng = np.random.default_rng(23)
+        positions = rng.uniform(0, 300, (120, 2))
+        bounds = (0.0, 300.0, 0.0, 300.0)
+
+        default = drp_effective_radius(positions, bounds, n_bins=10, max_radius=75.0)
+        raised = drp_effective_radius(
+            positions, bounds, n_bins=10, max_radius=75.0,
+            mean_density=3 * default["mean_density"])
+
+        assert raised["mean_density"] == 3 * default["mean_density"]
+        assert raised["effective_radius"] > default["effective_radius"]
 
     def test_effective_radius_nonnegative(self):
         rng = np.random.default_rng(7)
