@@ -5,11 +5,41 @@ from __future__ import annotations
 import numpy as np
 
 
+def _generate_centroids(
+        n_cells: int,
+        field_size: int,
+        rng: np.random.Generator,
+        arrangement: str,
+        jitter: float,
+        margin: float = 100.0,
+) -> np.ndarray:
+    """Place `n_cells` centroids either at random (CSR) or on a jittered grid."""
+    if arrangement == "random":
+        return rng.uniform(margin, field_size - margin, (n_cells, 2))
+
+    if arrangement == "regular":
+        n_side = int(np.ceil(np.sqrt(n_cells)))
+        span = field_size - 2 * margin
+        spacing = span / max(n_side - 1, 1)
+        xs = margin + spacing * np.arange(n_side)
+        ys = margin + spacing * np.arange(n_side)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+        rng.shuffle(points)
+        points = points[:n_cells].copy()
+        points += rng.uniform(-jitter * spacing, jitter * spacing, points.shape)
+        return points
+
+    raise ValueError(f"Unknown arrangement: {arrangement!r} (expected 'random' or 'regular')")
+
+
 def generate_example_neurons(
         n_cells: int = 50,
         field_size: int = 1000,
         cell_size_range: tuple[float, float] = (50, 150),
         polygon_type: str = "irregular",
+        arrangement: str = "random",
+        jitter: float = 0.15,
         seed: int = 42,
 ) -> list[np.ndarray]:
     """Generate synthetic polygonal neuron outlines.
@@ -24,6 +54,14 @@ def generate_example_neurons(
         Approximate radius range for cell_outlines.
     polygon_type : {"irregular", "concave", "convex"}
         Shape style of the generated cell_outlines.
+    arrangement : {"random", "regular"}
+        Spatial placement of cell centroids. "random" places them uniformly
+        at random (complete spatial randomness). "regular" places them on a
+        square grid with positional jitter, approximating a real, mostly
+        regular retinal mosaic.
+    jitter : float
+        Positional jitter for `arrangement="regular"`, as a fraction of the
+        grid spacing. Ignored when `arrangement="random"`. Default 0.15.
     seed : int
         Random seed for reproducibility.
 
@@ -33,11 +71,10 @@ def generate_example_neurons(
         Each entry is an array of shape (N, 2) with XY polygon coordinates.
     """
     rng = np.random.default_rng(seed)
+    centroids = _generate_centroids(n_cells, field_size, rng, arrangement, jitter)
     cell_outlines: list[np.ndarray] = []
 
-    for _ in range(n_cells):
-        cx = rng.uniform(100, field_size - 100)
-        cy = rng.uniform(100, field_size - 100)
+    for cx, cy in centroids:
         radius = rng.uniform(*cell_size_range)
 
         if polygon_type == "irregular":

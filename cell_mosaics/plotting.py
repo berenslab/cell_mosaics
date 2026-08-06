@@ -14,8 +14,11 @@ from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
 from matplotlib.patches import Polygon
 
+# matplotlib color spec: a name/hex string, or an RGB(A) tuple (e.g. from a colormap).
+ColorLike = str | tuple[float, float, float] | tuple[float, float, float, float]
 
-def plot_polygon(ax: Axes, points: np.ndarray, facecolor: str = 'gray', edgecolor: str = 'gray',
+
+def plot_polygon(ax: Axes, points: np.ndarray, facecolor: ColorLike = 'gray', edgecolor: ColorLike = 'gray',
                  edge_kws=None, face_kws=None, facealpha: float = 0.1) -> None:
     """Plot a filled polygon (e.g., a convex hull) onto an axes.
 
@@ -25,9 +28,9 @@ def plot_polygon(ax: Axes, points: np.ndarray, facecolor: str = 'gray', edgecolo
         Target axes to draw on.
     points : np.ndarray
         Array of shape (N, 2) with polygon vertices (x, y).
-    facecolor : str, optional
+    facecolor : ColorLike, optional
         Fill color for the polygon. Default 'gray'.
-    edgecolor : str, optional
+    edgecolor : ColorLike, optional
         Line color for the polygon outline. Default 'gray'.
     edge_kws : dict, optional
         Additional keyword arguments for the edge line. Default None.
