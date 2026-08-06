@@ -6,6 +6,7 @@ import pytest
 from cell_mosaics.metrics import (
     compute_centroids,
     density_recovery_profile,
+    drp_effective_radius,
     nearest_neighbor_distances,
     nnd_statistics,
     voronoi_analysis,
@@ -157,6 +158,99 @@ class TestDensityRecoveryProfile:
         positions = rng.uniform(0, 300, (60, 2))
         _, drp = density_recovery_profile(positions, (0, 300, 0, 300))
         assert np.all(drp >= 0)
+
+    def test_interior_mask_matches_unmasked_when_all_true(self):
+        rng = np.random.default_rng(5)
+        positions = rng.uniform(0, 300, (60, 2))
+        mask = np.ones(len(positions), dtype=bool)
+        _, drp_unmasked = density_recovery_profile(positions, (0, 300, 0, 300))
+        _, drp_masked = density_recovery_profile(
+            positions, (0, 300, 0, 300), interior_mask=mask
+        )
+        np.testing.assert_allclose(drp_masked, drp_unmasked)
+
+    def test_interior_mask_restricts_reference_cells(self):
+        # A grid with one corner cell removed from the reference set should
+        # still use it as a neighbour, but never as a reference point.
+        positions = regular_grid(6, spacing=50.0)
+        mask = np.ones(len(positions), dtype=bool)
+        mask[0] = False
+        centers_all, drp_all = density_recovery_profile(
+            positions, (0.0, 250.0, 0.0, 250.0), n_bins=10, max_radius=100.0
+        )
+        centers_masked, drp_masked = density_recovery_profile(
+            positions,
+            (0.0, 250.0, 0.0, 250.0),
+            n_bins=10,
+            max_radius=100.0,
+            interior_mask=mask,
+        )
+        np.testing.assert_allclose(centers_masked, centers_all)
+        assert not np.allclose(drp_masked, drp_all)
+
+
+# ---------------------------------------------------------------------------
+# drp_effective_radius
+# ---------------------------------------------------------------------------
+
+class TestDrpEffectiveRadius:
+    def test_required_keys(self):
+        rng = np.random.default_rng(6)
+        positions = rng.uniform(0, 300, (80, 2))
+        result = drp_effective_radius(positions, (0, 300, 0, 300))
+        expected = {
+            "effective_radius",
+            "missing_count",
+            "mean_density",
+            "bin_centers",
+            "cumulative_observed",
+            "cumulative_expected",
+        }
+        assert expected <= set(result)
+
+    def test_effective_radius_nonnegative(self):
+        rng = np.random.default_rng(7)
+        positions = rng.uniform(0, 300, (80, 2))
+        result = drp_effective_radius(positions, (0, 300, 0, 300))
+        assert result["effective_radius"] >= 0.0
+        assert result["missing_count"] >= 0.0
+
+    def test_regular_grid_has_larger_effective_radius_than_random(self):
+        # A regular grid has a genuine exclusion zone; a random field of
+        # matching density should not.
+        n, spacing = 10, 50.0
+        field = (0.0, (n - 1) * spacing, 0.0, (n - 1) * spacing)
+        regular = regular_grid(n, spacing)
+
+        rng = np.random.default_rng(8)
+        random_pos = rng.uniform(field[0], field[1], (n * n, 2))
+
+        re_regular = drp_effective_radius(
+            regular, field, n_bins=30, max_radius=100.0
+        )["effective_radius"]
+        re_random = drp_effective_radius(
+            random_pos, field, n_bins=30, max_radius=100.0
+        )["effective_radius"]
+        assert re_regular > re_random
+
+    def test_effective_radius_roughly_matches_grid_spacing(self):
+        # For a regular grid the exclusion zone should be on the order of
+        # the grid spacing (within a factor of ~2).
+        positions = regular_grid(10, spacing=50.0)
+        field = (0.0, 450.0, 0.0, 450.0)
+        result = drp_effective_radius(positions, field, n_bins=30, max_radius=100.0)
+        assert 25.0 < result["effective_radius"] < 100.0
+
+    def test_cumulative_arrays_shape(self):
+        rng = np.random.default_rng(9)
+        positions = rng.uniform(0, 300, (50, 2))
+        result = drp_effective_radius(positions, (0, 300, 0, 300), n_bins=12)
+        assert result["bin_centers"].shape == (12,)
+        assert result["cumulative_observed"].shape == (12,)
+        assert result["cumulative_expected"].shape == (12,)
+        # Both cumulative sequences must be monotonically non-decreasing.
+        assert np.all(np.diff(result["cumulative_observed"]) >= 0.0)
+        assert np.all(np.diff(result["cumulative_expected"]) > 0.0)
 
 
 # ---------------------------------------------------------------------------
