@@ -261,6 +261,7 @@ def voronoi_analysis(
     positions: np.ndarray,
     field_bounds: tuple[float, float, float, float] | None = None,
     interior_mask: np.ndarray | None = None,
+    margin_factor: float = 1.0,
 ) -> dict:
     """Compute Voronoi tessellation and summarise domain areas.
 
@@ -268,12 +269,21 @@ def voronoi_analysis(
     cells within one cell-length of the field boundary are excluded to reduce
     boundary artefacts.
 
+    Note: a Voronoi cell's area blows up whenever its true neighbor lies
+    outside the observed field, not only right at the convex hull -- a
+    sparse patch of a random (CSR) process near the edge can leave a
+    "just inside the margin" cell with a domain many times the median, since
+    nothing constrains it on the missing side. One cell-length (the default
+    margin) does not reliably exclude these; if `mean_area`/`cv_area` are
+    dominated by one or two extreme areas, increase `margin_factor` (at the
+    cost of fewer interior cells) rather than trusting the default margin.
+
     Parameters
     ----------
     positions : np.ndarray of shape (n_cells, 2)
     field_bounds : (xmin, xmax, ymin, ymax) or None
-        If provided (and `interior_mask` is not), cells within one
-        mean-cell-length of each boundary edge are excluded.
+        If provided (and `interior_mask` is not), cells within
+        `margin_factor` mean-cell-lengths of each boundary edge are excluded.
     interior_mask : np.ndarray of bool, shape (n_cells,), optional
         Explicit interior selection (e.g. a fixed stable-sampling crop box),
         used instead of the automatic `field_bounds` margin. The Voronoi
@@ -281,6 +291,12 @@ def voronoi_analysis(
         interior cells get correct neighbors/areas from cells just outside
         the mask -- only the summary statistics are restricted. Cells with an
         infinite (unbounded) region are always excluded regardless.
+    margin_factor : float, optional
+        Scales the automatic `field_bounds` margin (ignored when
+        `interior_mask` is given). Default 1.0 (one mean-cell-length).
+        Increase to exclude more of the boundary, trading away interior
+        cells for less bias from cells whose true neighbor lies outside
+        the field. Default 1.0.
 
     Returns
     -------
@@ -291,6 +307,10 @@ def voronoi_analysis(
         cv_area : float — coefficient of variation (std / mean)
         regularity_index : float — mean / std
         n_interior : int — number of interior cells used
+        interior_mask : np.ndarray of bool, shape (n_cells,) — the resolved
+            interior selection over *all* input `positions` (not just the
+            interior ones), for reuse elsewhere, e.g. to color excluded
+            cells differently in `plot_metrics.plot_voronoi_tessellation`.
     """
     vor = Voronoi(positions)
 
@@ -307,7 +327,7 @@ def voronoi_analysis(
     elif field_bounds is not None:
         xmin, xmax, ymin, ymax = field_bounds
         field_area = (xmax - xmin) * (ymax - ymin)
-        margin = np.sqrt(field_area / len(positions))  # ≈ one cell length
+        margin = margin_factor * np.sqrt(field_area / len(positions))  # ≈ one cell length
         resolved_interior_mask = (
             ~np.isnan(areas)
             & (positions[:, 0] > xmin + margin)
@@ -330,6 +350,7 @@ def voronoi_analysis(
         "cv_area": std / mean if mean > 0 else np.nan,
         "regularity_index": mean / std if std > 0 else np.inf,
         "n_interior": int(np.sum(resolved_interior_mask)),
+        "interior_mask": resolved_interior_mask,
     }
 
 

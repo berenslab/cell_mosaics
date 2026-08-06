@@ -300,3 +300,30 @@ class TestVoronoiAnalysis:
         result = voronoi_analysis(positions)
         assert result["n_interior"] > 0
         assert np.all(result["areas"] > 0)
+
+    def test_margin_factor_default_matches_factor_one(self):
+        rng = np.random.default_rng(11)
+        positions = rng.uniform(0, 300, (60, 2))
+        field = (0, 300, 0, 300)
+        default = voronoi_analysis(positions, field_bounds=field)
+        explicit = voronoi_analysis(positions, field_bounds=field, margin_factor=1.0)
+        assert default["n_interior"] == explicit["n_interior"]
+        np.testing.assert_allclose(np.sort(default["areas"]), np.sort(explicit["areas"]))
+
+    def test_larger_margin_factor_excludes_more_cells(self):
+        rng = np.random.default_rng(12)
+        positions = rng.uniform(0, 500, (80, 2))
+        field = (0, 500, 0, 500)
+        loose = voronoi_analysis(positions, field_bounds=field, margin_factor=1.0)
+        strict = voronoi_analysis(positions, field_bounds=field, margin_factor=2.5)
+        assert strict["n_interior"] < loose["n_interior"]
+
+    def test_larger_margin_factor_caps_extreme_areas(self):
+        # A boundary-adjacent cell in a sparse patch can have a Voronoi area
+        # many times the median; a stricter margin should exclude it.
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0, 1000, (80, 2))
+        field = (0, 1000, 0, 1000)
+        loose = voronoi_analysis(positions, field_bounds=field, margin_factor=1.0)
+        strict = voronoi_analysis(positions, field_bounds=field, margin_factor=2.5)
+        assert strict["areas"].max() < loose["areas"].max()
