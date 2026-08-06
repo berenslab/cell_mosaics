@@ -13,6 +13,7 @@ belonging to one parent mosaic than the other.
 from __future__ import annotations
 
 import numpy as np
+from scipy.spatial import KDTree
 
 from .metrics import nnd_statistics, voronoi_analysis
 
@@ -20,6 +21,27 @@ STATISTICS = {
     "regularity_index": {"higher_is_more_regular": True, "min_n": 3},
     "cv_area": {"higher_is_more_regular": False, "min_n": 4},
 }
+
+
+def _permute(rng, mask, strata=None):
+    """Permute `mask`, independently within each stratum if `strata` is given.
+
+    A global permutation assumes the cells are spatially homogeneous. When
+    sampling density varies across the field (e.g. a densely proofread centre
+    and a sparse periphery), it draws permuted group members from wherever
+    cells are densest, so the null describes a different neighbourhood than
+    the real group occupies. Permuting only within strata (e.g. blocks of a
+    coarse spatial grid) holds each group's spatial distribution roughly
+    fixed, isolating spatial *arrangement* from where the cells happen to lie.
+    """
+    if strata is None:
+        return rng.permutation(mask)
+
+    permuted = mask.copy()
+    for stratum in np.unique(strata):
+        in_stratum = strata == stratum
+        permuted[in_stratum] = rng.permutation(mask[in_stratum])
+    return permuted
 
 
 def _group_statistic(positions, interior_mask, statistic, field_bounds):
@@ -42,6 +64,7 @@ def label_permutation_test(
     n_permutations: int = 2000,
     field_bounds: tuple[float, float, float, float] | None = None,
     seed: int | None = None,
+    strata: np.ndarray | None = None,
 ) -> dict:
     """Test whether real subgroups in `labels` are more regular than chance.
 
@@ -80,6 +103,12 @@ def label_permutation_test(
         Forwarded to `voronoi_analysis`; unused (and unnecessary) when an
         explicit `interior_mask` is given.
     seed : int, optional
+    strata : np.ndarray of shape (n,), optional
+        Stratum id per position. Labels are then permuted only *within* each
+        stratum, so the null preserves each group's coarse spatial
+        distribution -- use this when sampling density varies across the
+        field, otherwise the null is drawn from wherever cells are densest.
+        Defaults to permuting globally.
 
     Returns
     -------
@@ -107,6 +136,11 @@ def label_permutation_test(
     if groups is None:
         groups = list(np.unique(labels))
 
+    if strata is not None:
+        strata = np.asarray(strata)
+        if len(strata) != len(positions):
+            raise ValueError("strata must have the same length as positions")
+
     rng = np.random.default_rng(seed)
     higher_is_better = STATISTICS[statistic]["higher_is_more_regular"]
 
@@ -117,7 +151,7 @@ def label_permutation_test(
 
         null = np.empty(n_permutations)
         for p in range(n_permutations):
-            perm_mask = rng.permutation(mask)
+            perm_mask = _permute(rng, mask, strata)
             null[p] = _group_statistic(positions[perm_mask], interior_mask[perm_mask], statistic, field_bounds)
 
         valid = ~np.isnan(null)
@@ -131,3 +165,130 @@ def label_permutation_test(
         results[group] = {"observed": observed, "null": null, "p_value": p_value}
 
     return results
+
+
+def cross_nnd_permutation_test(
+    positions: np.ndarray,
+    labels: np.ndarray,
+    focal_group,
+    parent_group,
+    interior_mask: np.ndarray | None = None,
+    n_permutations: int = 2000,
+    seed: int | None = None,
+    strata: np.ndarray | None = None,
+) -> dict:
+    """Test whether `focal_group` cells respect `parent_group`'s exclusion zone.
+
+    Statistic: the mean distance from each focal soma to the *nearest* parent
+    soma. The null shuffles which pooled (focal + parent) cells carry the
+    focal label, preserving the focal count.
+
+    This asks directly whether the focal cells behave like members of the
+    parent mosaic, and -- unlike testing a merged group's overall regularity
+    -- its answer is driven by the focal cells themselves rather than by
+    however many parent cells they are pooled with. That makes it the
+    appropriate test when the focal group is much smaller than the parent
+    (where a merged-group regularity test just reports the parent's own
+    regularity).
+
+    Interpretation:
+
+    - **Same mosaic.** If the focal cells are members of the parent's mosaic,
+      they sit in its gaps and keep its characteristic spacing, exactly like
+      a randomly relabelled subset of the pooled mosaic would. Observed
+      lands mid-null, so `p_closer` is unremarkable (≈0.5).
+    - **Independent types.** If the focal cells belong to a different type,
+      nothing stops them sitting arbitrarily close to parent somas, so the
+      observed mean lands below the null: `p_closer` is small.
+
+    So a *small* `p_closer` is evidence **against** the focal cells belonging
+    to the parent mosaic. Note that an unremarkable `p_closer` is a failure
+    to reject rather than positive proof of membership.
+
+    Parameters
+    ----------
+    positions : np.ndarray of shape (n, 2)
+    labels : np.ndarray of shape (n,)
+    focal_group, parent_group
+        Label values selecting the two sets. Only cells carrying one of these
+        two labels take part; the rest of `positions` is ignored.
+    interior_mask : np.ndarray of bool, shape (n,), optional
+        Restricts which *focal* cells are evaluated (e.g. to a
+        stable-sampling crop). Nearest-parent lookups always search the full
+        parent set, so a focal cell near the crop edge can still match a
+        parent soma outside it. Defaults to using every focal cell.
+    n_permutations : int
+    seed : int, optional
+    strata : np.ndarray of shape (n,), optional
+        Stratum id per position; the focal label is then permuted only within
+        each stratum. Strongly recommended here whenever sampling density is
+        uneven across the field: with a global null, a sparsely sampled focal
+        group is compared against pseudo-focal cells drawn from the dense
+        centre, which inflates the observed distance relative to the null for
+        *both* candidate parents and buries the membership signal.
+
+    Returns
+    -------
+    dict with keys
+        observed : float — mean nearest-parent distance for the real labels
+        null : np.ndarray of shape (n_permutations,)
+        p_closer : float — fraction of null <= observed (small = focal cells
+            sit closer to parent cells than chance, i.e. independent types)
+        p_farther : float — fraction of null >= observed
+        n_focal_evaluated : int
+    """
+    positions = np.asarray(positions, dtype=float)
+    labels = np.asarray(labels)
+    if len(positions) != len(labels):
+        raise ValueError("positions and labels must have the same length")
+
+    if interior_mask is None:
+        interior_mask = np.ones(len(positions), dtype=bool)
+    else:
+        interior_mask = np.asarray(interior_mask, dtype=bool)
+
+    pool = (labels == focal_group) | (labels == parent_group)
+    pool_positions = positions[pool]
+    pool_interior = interior_mask[pool]
+    is_focal = labels[pool] == focal_group
+
+    if strata is not None:
+        strata = np.asarray(strata)
+        if len(strata) != len(positions):
+            raise ValueError("strata must have the same length as positions")
+        strata = strata[pool]
+
+    if not is_focal.any():
+        raise ValueError(f"no cells carry focal_group label {focal_group!r}")
+    if is_focal.all():
+        raise ValueError(f"no cells carry parent_group label {parent_group!r}")
+
+    def _mean_nearest_parent(focal_selection):
+        focal_pts = pool_positions[focal_selection & pool_interior]
+        parent_pts = pool_positions[~focal_selection]
+        if len(focal_pts) == 0 or len(parent_pts) == 0:
+            return np.nan
+        distances, _ = KDTree(parent_pts).query(focal_pts, k=1)
+        return float(np.mean(distances))
+
+    observed = _mean_nearest_parent(is_focal)
+
+    rng = np.random.default_rng(seed)
+    null = np.empty(n_permutations)
+    for p in range(n_permutations):
+        null[p] = _mean_nearest_parent(_permute(rng, is_focal, strata))
+
+    valid = ~np.isnan(null)
+    if np.isnan(observed) or not valid.any():
+        p_closer = p_farther = np.nan
+    else:
+        p_closer = float(np.mean(null[valid] <= observed))
+        p_farther = float(np.mean(null[valid] >= observed))
+
+    return {
+        "observed": observed,
+        "null": null,
+        "p_closer": p_closer,
+        "p_farther": p_farther,
+        "n_focal_evaluated": int((is_focal & pool_interior).sum()),
+    }
