@@ -2,8 +2,9 @@
 
 One function per metric in `cell_mosaics.metrics`: nearest-neighbour
 distance (NND), the density recovery profile (DRP), and Voronoi domain
-analysis. Each takes the metric's own result (not raw positions or
-outlines) and draws it onto an axes, following the same `(fig, ax)`
+analysis, plus the random-simulation comparisons of `monte_carlo`. Each
+takes the metric's own result (not raw positions or outlines) and draws it
+onto an axes, following the same `(fig, ax)`
 return convention as `plotting.plot_coverage` (fig is None when `ax` is
 supplied). `color`/`label`/`show_mean` let several calls be overlaid on
 one `ax` to compare mosaics, e.g. one polygon type per call.
@@ -288,5 +289,123 @@ def plot_voronoi_areas(
     ax.set_ylabel("Count")
     if not overlay:
         ax.set_title(f"Domain area distribution (CV = {vor_stats['cv_area']:.3f})")
+    _add_legend_if_labeled(ax)
+    return fig, ax
+
+
+_STATISTIC_LABELS = {
+    "nnd_regularity_index": "NN regularity index",
+    "voronoi_regularity_index": "Voronoi regularity index",
+    "effective_radius": "Effective radius",
+    "packing_factor": "Packing factor",
+}
+
+
+def plot_simulation_comparison(
+    comparison: dict,
+    statistic: str = "voronoi_regularity_index",
+    *,
+    ax: Axes | None = None,
+    figsize: tuple[int, int] = (6, 4),
+    bins: int = 15,
+    color: ColorLike = "tomato",
+    simulated_color: ColorLike = "gray",
+) -> tuple[Figure | None, Axes]:
+    """Plot one statistic of a real field against its random simulations.
+
+    The simulated values are drawn as a histogram and the real field as a
+    vertical line, as in Keeley, Eglen & Reese (2020, Figs. 3i, 11k,l).
+
+    Parameters
+    ----------
+    comparison : dict
+        Output of `monte_carlo.compare_to_random_simulations`.
+    statistic : str, optional
+        One of `monte_carlo.REGULARITY_STATISTICS`. Default
+        'voronoi_regularity_index'.
+    ax : matplotlib.axes.Axes or None, optional
+        Draw on this axes; otherwise create a new figure. Default None.
+    figsize : tuple[int, int], optional
+        Figure size if a new figure is created. Default (6, 4).
+    bins : int, optional
+        Histogram bin count. Default 15.
+    color : ColorLike, optional
+        Color of the real field's line. Default 'tomato'.
+    simulated_color : ColorLike, optional
+        Histogram color for the simulations. Default 'gray'.
+
+    Returns
+    -------
+    (fig, ax)
+        fig may be None if `ax` was provided.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = None
+
+    result = comparison[statistic]
+    simulated = result["simulated"][~np.isnan(result["simulated"])]
+    ax.hist(simulated, bins=bins, color=simulated_color, edgecolor="white",
+            linewidth=0.5, label=f"random (n = {len(simulated)})")
+    ax.axvline(result["observed"], color=color, linewidth=2, label="real")
+
+    ax.set_xlabel(_STATISTIC_LABELS.get(statistic, statistic))
+    ax.set_ylabel("Count")
+    ax.set_title(f"ratio = {result['ratio']:.2f}, p = {result['p_greater']:.3f}")
+    _add_legend_if_labeled(ax)
+    return fig, ax
+
+
+def plot_envelope(
+    envelope: dict,
+    *,
+    ax: Axes | None = None,
+    figsize: tuple[int, int] = (6, 4),
+    color: ColorLike = "tomato",
+    envelope_color: ColorLike = "gray",
+    label: str = "real",
+) -> tuple[Figure | None, Axes]:
+    """Plot a G or L function against its simulation envelope.
+
+    Following Keeley, Eglen & Reese (2020, Fig. 5e-h): the real field in
+    `color`, the mean of the simulations dashed, and their min/max envelope
+    shaded. Informally, the model fits if the real curve stays inside the
+    envelope; the title reports the formal ranking p-value.
+
+    Parameters
+    ----------
+    envelope : dict
+        Output of `monte_carlo.envelope_test`.
+    ax : matplotlib.axes.Axes or None, optional
+        Draw on this axes; otherwise create a new figure. Default None.
+    figsize : tuple[int, int], optional
+        Figure size if a new figure is created. Default (6, 4).
+    color : ColorLike, optional
+        Color of the real field's curve. Default 'tomato'.
+    envelope_color : ColorLike, optional
+        Color of the envelope and simulation mean. Default 'gray'.
+    label : str, optional
+        Legend label for the real curve. Default 'real'.
+
+    Returns
+    -------
+    (fig, ax)
+        fig may be None if `ax` was provided.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = None
+
+    r = envelope["r"]
+    ax.fill_between(r, envelope["lower"], envelope["upper"], color=envelope_color,
+                    alpha=0.3, linewidth=0, label="envelope")
+    ax.plot(r, envelope["mean"], color=envelope_color, linewidth=1, linestyle="--",
+            label="simulation mean")
+    ax.plot(r, envelope["observed"], color=color, linewidth=2, label=label)
+
+    ax.set_xlabel("Distance")
+    ax.set_title(f"p = {envelope['p_value']:.3f}")
     _add_legend_if_labeled(ax)
     return fig, ax

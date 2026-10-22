@@ -1,7 +1,9 @@
 """Spatial statistics metrics for cell mosaics.
 
 Includes nearest-neighbor distance (NND), density recovery profile (DRP),
-and Voronoi domain analysis — standard measures of mosaic regularity.
+and Voronoi domain analysis — standard measures of mosaic regularity — plus
+the packing factor, the cumulative G and L functions, and the border-cell
+exclusion rules of Keeley, Eglen & Reese (2020).
 """
 
 from __future__ import annotations
@@ -88,6 +90,7 @@ def _drp_bin_counts(
     positions: np.ndarray,
     bin_edges: np.ndarray,
     interior_mask: np.ndarray | None = None,
+    edge_correction_bounds: tuple[float, float, float, float] | None = None,
 ) -> np.ndarray:
     """Average per-reference-cell neighbor count in each DRP annulus.
 
@@ -95,19 +98,32 @@ def _drp_bin_counts(
     array; `interior_mask` only restricts which cells act as reference
     points (the denominator/rows of the average), so a masked-out cell can
     still be counted as someone else's neighbor.
+
+    With `edge_correction_bounds`, each pair is weighted by the translation
+    edge correction A / ((W - |dx|) * (H - |dy|)) for that rectangle, which
+    compensates on average for neighbors lost outside the field.
     """
     dists = cdist(positions, positions)
     np.fill_diagonal(dists, np.inf)
+    if edge_correction_bounds is not None:
+        xmin, xmax, ymin, ymax = edge_correction_bounds
+        width, height = xmax - xmin, ymax - ymin
+        dx = np.abs(positions[:, None, 0] - positions[None, :, 0])
+        dy = np.abs(positions[:, None, 1] - positions[None, :, 1])
+        weights = width * height / ((width - dx) * (height - dy))
+    else:
+        weights = np.ones_like(dists)
 
     if interior_mask is not None:
-        dists = dists[np.asarray(interior_mask, dtype=bool)]
+        interior_mask = np.asarray(interior_mask, dtype=bool)
+        dists, weights = dists[interior_mask], weights[interior_mask]
     n_ref = dists.shape[0]
 
     n_bins = len(bin_edges) - 1
     counts = np.zeros(n_bins)
     for j in range(n_bins):
         in_ring = (dists >= bin_edges[j]) & (dists < bin_edges[j + 1])
-        counts[j] = in_ring.sum() / n_ref
+        counts[j] = weights[in_ring].sum() / n_ref
     return counts
 
 
@@ -118,6 +134,7 @@ def density_recovery_profile(
     max_radius: float | None = None,
     interior_mask: np.ndarray | None = None,
     mean_density: float | None = None,
+    edge_correction: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the Density Recovery Profile (DRP).
 
@@ -130,7 +147,7 @@ def density_recovery_profile(
     `interior_mask` to exclude such cells from acting as reference points
     (see below); this does not by itself correct the more subtle bias from
     counting neighbors *of* an interior cell that happen to fall outside
-    the field entirely (no edge-weighting correction is applied).
+    the field entirely, unless `edge_correction` is set.
 
     Parameters
     ----------
@@ -163,6 +180,12 @@ def density_recovery_profile(
         is too low, so the profile settles above 1 instead of recovering to
         it and the exclusion zone is understated. Passing the interior's own
         density fixes both.
+    edge_correction : bool, optional
+        Weight each pair by the translation edge correction for the
+        rectangular `field_bounds`, A / ((W - |dx|) * (H - |dy|)), so that
+        neighbors lost beyond the field edge are compensated for on average
+        and every cell can act as a reference point. An alternative to
+        `interior_mask` (combining the two over-corrects). Default False.
 
     Returns
     -------
@@ -181,7 +204,8 @@ def density_recovery_profile(
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     bin_areas = np.pi * (bin_edges[1:] ** 2 - bin_edges[:-1] ** 2)
 
-    counts = _drp_bin_counts(positions, bin_edges, interior_mask)
+    counts = _drp_bin_counts(positions, bin_edges, interior_mask,
+                             field_bounds if edge_correction else None)
     expected = global_density * bin_areas
     drp = counts / expected
 
@@ -195,6 +219,8 @@ def drp_effective_radius(
     max_radius: float | None = None,
     interior_mask: np.ndarray | None = None,
     mean_density: float | None = None,
+    edge_correction: bool = False,
+    method: str = "max_deficit",
 ) -> dict:
     """Quantify the DRP exclusion zone via Rodieck's (1991) effective radius.
 
@@ -219,14 +245,27 @@ def drp_effective_radius(
     of positive fluctuations in the deficit will be picked up as if they
     were a real exclusion zone). The bias shrinks as `n_cells` grows at
     fixed density; for fields with only a few dozen cells, treat
-    `effective_radius` as an upper bound rather than a precise estimate.
+    `effective_radius` as an upper bound rather than a precise estimate. It
+    also overshoots for near-lattice mosaics, whose deficit peaks again just
+    inside the second ring of neighbors.
+
+    `method='rodieck'` instead follows Rodieck's (1991) definition, as used
+    by Keeley, Eglen & Reese (2020): N_missing is the deficit accumulated
+    over the bins from the origin up to (not including) the first bin whose
+    density reaches `mean_density`, i.e. only the contiguous low-density
+    region around the origin. It is unbiased for a lattice and does not pick
+    up noise beyond the exclusion zone, but becomes unreliable when a
+    low-density field puts a chance close pair in an early bin.
 
     Parameters
     ----------
-    positions, field_bounds, n_bins, max_radius, interior_mask, mean_density
+    positions, field_bounds, n_bins, max_radius, interior_mask, mean_density, edge_correction
         As per `density_recovery_profile`. `mean_density` sets the CSR
         baseline that the deficit -- and hence r_e -- is measured against, so
         override it whenever you would override it there.
+    method : {'max_deficit', 'rodieck'}, optional
+        How N_missing is read off the profile (see above). Default
+        'max_deficit'.
 
     Returns
     -------
@@ -254,12 +293,21 @@ def drp_effective_radius(
     bin_edges = np.linspace(0.0, max_radius, n_bins + 1)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
 
-    counts = _drp_bin_counts(positions, bin_edges, interior_mask)
+    counts = _drp_bin_counts(positions, bin_edges, interior_mask,
+                             field_bounds if edge_correction else None)
     cumulative_observed = np.cumsum(counts)
     cumulative_expected = mean_density * np.pi * bin_edges[1:] ** 2
 
     deficit = cumulative_expected - cumulative_observed
-    missing_count = float(max(deficit.max(), 0.0))
+    if method == "max_deficit":
+        missing_count = float(max(deficit.max(), 0.0))
+    elif method == "rodieck":
+        bin_expected = np.diff(mean_density * np.pi * bin_edges ** 2)
+        recovered = np.flatnonzero(counts >= bin_expected)
+        n_below = recovered[0] if recovered.size else n_bins
+        missing_count = float(deficit[n_below - 1]) if n_below > 0 else 0.0
+    else:
+        raise ValueError(f"Unknown method {method!r}; choose 'max_deficit' or 'rodieck'")
     effective_radius = (
         float(np.sqrt(missing_count / (np.pi * mean_density)))
         if missing_count > 0
@@ -410,6 +458,194 @@ def voronoi_domain_polygons(
             point_indices.append(i)
 
     return polygons, np.asarray(areas), np.asarray(point_indices, dtype=int)
+
+
+def nnd_border_mask(
+    positions: np.ndarray,
+    field_bounds: tuple[float, float, float, float],
+) -> np.ndarray:
+    """Cells whose nearest neighbor is certain, for border-cell exclusion.
+
+    A cell lying closer to the field border than to its nearest neighbor
+    could have its true nearest neighbor just outside the field, so its NND
+    is uncertain. Excluding such cells is the border rule of Keeley, Eglen &
+    Reese (2020, Fig. 1); pass the result as `interior_mask` to
+    `nnd_statistics` or `g_function`.
+
+    Parameters
+    ----------
+    positions : np.ndarray of shape (n_cells, 2)
+    field_bounds : (xmin, xmax, ymin, ymax)
+
+    Returns
+    -------
+    np.ndarray of bool, shape (n_cells,) — True where NND < distance to border
+    """
+    xmin, xmax, ymin, ymax = field_bounds
+    x, y = positions[:, 0], positions[:, 1]
+    border_distance = np.minimum.reduce([x - xmin, xmax - x, y - ymin, ymax - y])
+    return nearest_neighbor_distances(positions) < border_distance
+
+
+def voronoi_border_mask(
+    positions: np.ndarray,
+    field_bounds: tuple[float, float, float, float],
+) -> np.ndarray:
+    """Cells whose Voronoi domain is certain, for border-cell exclusion.
+
+    A domain is uncertain if it is unbounded or any of its vertices lies
+    outside the field, since an unobserved cell beyond the border could then
+    cut it. Unlike the fixed margin of `voronoi_analysis(field_bounds=...)`,
+    this adapts to local density, and is the rule used by Keeley, Eglen &
+    Reese (2020, Fig. 7). Pass the result as `interior_mask` to
+    `voronoi_analysis`.
+
+    Parameters
+    ----------
+    positions : np.ndarray of shape (n_cells, 2)
+    field_bounds : (xmin, xmax, ymin, ymax)
+
+    Returns
+    -------
+    np.ndarray of bool, shape (n_cells,)
+    """
+    xmin, xmax, ymin, ymax = field_bounds
+    vor = Voronoi(positions)
+    mask = np.zeros(len(positions), dtype=bool)
+    for i, region_idx in enumerate(vor.point_region):
+        region = vor.regions[region_idx]
+        if len(region) == 0 or -1 in region:
+            continue
+        verts = vor.vertices[region]
+        mask[i] = bool(np.all(
+            (verts[:, 0] >= xmin) & (verts[:, 0] <= xmax)
+            & (verts[:, 1] >= ymin) & (verts[:, 1] <= ymax)
+        ))
+    return mask
+
+
+def packing_factor(effective_radius: float, density: float) -> float:
+    """Rodieck's (1991) packing factor, (ER / MR)**2.
+
+    MR is the maximal radius: the nearest-neighbor spacing of a perfect
+    hexagonal lattice at the same density, sqrt(2 / (sqrt(3) * density)).
+    The packing factor runs from 0 (complete spatial randomness) to 1 (a
+    hexagonal lattice). It is scale-invariant but measures efficient packing
+    rather than regularity per se, and inherits the unreliability of the
+    effective radius at low density -- compare it with random simulations
+    (`monte_carlo.compare_to_random_simulations`) rather than reading it
+    absolutely.
+
+    Parameters
+    ----------
+    effective_radius : float
+        E.g. `drp_effective_radius(...)["effective_radius"]`.
+    density : float
+        Cells per unit area, in the units of `effective_radius`.
+    """
+    maximal_radius = np.sqrt(2.0 / (np.sqrt(3.0) * density))
+    return float((effective_radius / maximal_radius) ** 2)
+
+
+def packing_intensity(diameter: float | np.ndarray, density: float) -> float:
+    """Fraction of the field covered by disks of `diameter` (Eglen & Willshaw 2002).
+
+    Ranges from 0 (infinitesimal points) to ~0.91 (hexagonally packed disks).
+    Random sequential placement of non-overlapping disks jams at ~0.55, so
+    `simulation.simulate_random_mosaic` cannot reach a soma-size or d_min
+    constraint whose packing intensity is much above that.
+
+    Parameters
+    ----------
+    diameter : float or np.ndarray
+        A single disk diameter, or one per cell (the mean squared diameter
+        is used).
+    density : float
+        Cells per unit area.
+    """
+    mean_sq_diameter = float(np.mean(np.asarray(diameter, dtype=float) ** 2))
+    return density * np.pi * mean_sq_diameter / 4.0
+
+
+def g_function(
+    positions: np.ndarray,
+    r: np.ndarray,
+    interior_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """The G function: the cumulative distribution of nearest-neighbor distances.
+
+    G(r) is the fraction of cells whose nearest neighbor lies within r
+    (Diggle 2002). Being cumulative, it avoids the bin-width choices of an
+    NND histogram, which matters for low-density mosaics.
+
+    Parameters
+    ----------
+    positions : np.ndarray of shape (n_cells, 2)
+    r : np.ndarray
+        Distances at which to evaluate G.
+    interior_mask : np.ndarray of bool, shape (n_cells,), optional
+        Cells to include, e.g. from `nnd_border_mask`. Nearest neighbors
+        are still searched among all `positions`. Defaults to every cell.
+
+    Returns
+    -------
+    np.ndarray of shape r.shape
+    """
+    nnd = nearest_neighbor_distances(positions)
+    if interior_mask is not None:
+        nnd = nnd[np.asarray(interior_mask, dtype=bool)]
+    nnd = np.sort(nnd)
+    if len(nnd) == 0:
+        return np.full(np.shape(r), np.nan)
+    return np.searchsorted(nnd, np.asarray(r, dtype=float), side="right") / len(nnd)
+
+
+def l_function(
+    positions: np.ndarray,
+    field_bounds: tuple[float, float, float, float],
+    r: np.ndarray,
+) -> np.ndarray:
+    """Besag's L function, sqrt(K(r) / pi), with translation edge correction.
+
+    K(r) is Ripley's (1976) K function: the expected number of further cells
+    within r of a typical cell, divided by the density. It is the cumulative
+    counterpart of the density recovery profile, and L(r) = r for complete
+    spatial randomness; an exclusion zone shows as L(r) < r at small r.
+
+    Pairs are weighted by the translation edge correction for a rectangular
+    window, A / ((W - |dx|) * (H - |dy|)), which compensates for pairs that
+    would fall outside the field.
+
+    Parameters
+    ----------
+    positions : np.ndarray of shape (n_cells, 2)
+    field_bounds : (xmin, xmax, ymin, ymax)
+    r : np.ndarray
+        Distances at which to evaluate L.
+
+    Returns
+    -------
+    np.ndarray of shape r.shape
+    """
+    xmin, xmax, ymin, ymax = field_bounds
+    width, height = xmax - xmin, ymax - ymin
+    area = width * height
+    n = len(positions)
+    r = np.asarray(r, dtype=float)
+    if n < 2:
+        return np.full(r.shape, np.nan)
+
+    pairs = KDTree(positions).query_pairs(float(r.max()), output_type="ndarray")
+    delta = np.abs(positions[pairs[:, 0]] - positions[pairs[:, 1]])
+    dist = np.hypot(delta[:, 0], delta[:, 1])
+    weights = area / ((width - delta[:, 0]) * (height - delta[:, 1]))
+
+    order = np.argsort(dist)
+    cumulative_weight = np.concatenate([[0.0], np.cumsum(weights[order])])
+    within = cumulative_weight[np.searchsorted(dist[order], r, side="right")]
+    # Each unordered pair counts once from each of its two cells.
+    k = area * 2.0 * within / (n * (n - 1))
+    return np.sqrt(k / np.pi)
 
 
 def _polygon_area(vertices: np.ndarray) -> float:

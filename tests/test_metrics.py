@@ -391,3 +391,138 @@ class TestVoronoiAnalysis:
         loose = voronoi_analysis(positions, field_bounds=field, margin_factor=1.0)
         strict = voronoi_analysis(positions, field_bounds=field, margin_factor=2.5)
         assert strict["areas"].max() < loose["areas"].max()
+
+
+# ---------------------------------------------------------------------------
+# Border masks, packing, G and L functions (Keeley, Eglen & Reese 2020)
+# ---------------------------------------------------------------------------
+
+from cell_mosaics.metrics import (  # noqa: E402
+    g_function,
+    l_function,
+    nnd_border_mask,
+    packing_factor,
+    packing_intensity,
+    voronoi_border_mask,
+)
+
+
+def hex_lattice(n_x: int, n_y: int, spacing: float) -> np.ndarray:
+    xs, ys = np.meshgrid(np.arange(n_x), np.arange(n_y))
+    x = (xs + 0.5 * (ys % 2)) * spacing
+    y = ys * np.sqrt(3) / 2 * spacing
+    return np.column_stack([x.ravel(), y.ravel()])
+
+
+class TestNndBorderMask:
+    def test_excludes_cell_closer_to_border_than_neighbor(self):
+        # Grid spacing 10 inside a field with a 2-unit margin: edge cells are
+        # 2 from the border but 10 from their neighbor, so they are excluded.
+        positions = regular_grid(5, 10.0) + 2.0
+        mask = nnd_border_mask(positions, (0, 44, 0, 44))
+        on_edge = np.any((positions == 2.0) | (positions == 42.0), axis=1)
+        np.testing.assert_array_equal(mask, ~on_edge)
+
+    def test_wide_margin_keeps_all(self):
+        positions = regular_grid(4, 10.0) + 50.0
+        assert nnd_border_mask(positions, (0, 200, 0, 200)).all()
+
+
+class TestVoronoiBorderMask:
+    def test_grid_excludes_outer_ring(self):
+        positions = regular_grid(6, 10.0) + 5.0
+        mask = voronoi_border_mask(positions, (0, 60, 0, 60))
+        outer = np.any((positions == 5.0) | (positions == 55.0), axis=1)
+        assert not mask[outer].any()
+        assert mask[~outer].all()
+
+    def test_domains_crossing_border_excluded(self):
+        # Same grid in a tighter field: the second ring's domains (10-20 and
+        # 40-50) now cross its edge, leaving only the central 2x2 block.
+        positions = regular_grid(6, 10.0) + 5.0
+        mask = voronoi_border_mask(positions, (12, 48, 12, 48))
+        central = np.all((positions == 25.0) | (positions == 35.0), axis=1)
+        np.testing.assert_array_equal(mask, central)
+
+
+class TestPackingFactor:
+    def test_hexagonal_maximal_radius_gives_one(self):
+        density = 0.01
+        mr = np.sqrt(2.0 / (np.sqrt(3.0) * density))
+        assert packing_factor(mr, density) == pytest.approx(1.0)
+
+    def test_zero_effective_radius(self):
+        assert packing_factor(0.0, 0.01) == 0.0
+
+    def test_hex_lattice_rodieck_effective_radius(self):
+        spacing = 10.0
+        positions = hex_lattice(30, 35, spacing)
+        bounds = (-2.5, 297.5, -spacing * np.sqrt(3) / 4, 34 * spacing * np.sqrt(3) / 2
+                  + spacing * np.sqrt(3) / 4)
+        er = drp_effective_radius(positions, bounds, n_bins=60, max_radius=30,
+                                  method="rodieck", edge_correction=True)["effective_radius"]
+        density = len(positions) / ((bounds[1] - bounds[0]) * (bounds[3] - bounds[2]))
+        # Exact up to the 0.5-unit bin width.
+        assert er == pytest.approx(spacing, abs=0.6)
+        assert packing_factor(er, density) == pytest.approx(1.0, abs=0.15)
+
+
+class TestPackingIntensity:
+    def test_single_diameter(self):
+        assert packing_intensity(10.0, 0.001) == pytest.approx(0.001 * np.pi * 25)
+
+    def test_per_cell_diameters_use_mean_square(self):
+        assert packing_intensity(np.array([2.0, 4.0]), 1.0) == pytest.approx(np.pi * 10 / 4)
+
+
+class TestGFunction:
+    def test_grid_step_at_spacing(self):
+        positions = regular_grid(5, 10.0)
+        r = np.array([0.0, 9.9, 10.0, 20.0])
+        np.testing.assert_allclose(g_function(positions, r), [0, 0, 1, 1])
+
+    def test_monotone_between_zero_and_one(self):
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0, 100, (60, 2))
+        g = g_function(positions, np.linspace(0, 50, 51))
+        assert g[0] == 0.0
+        assert g[-1] == 1.0
+        assert np.all(np.diff(g) >= 0)
+
+    def test_interior_mask_restricts_cells(self):
+        positions = np.array([[0, 0], [1, 0], [10, 0], [15, 0]], dtype=float)
+        mask = np.array([False, False, True, True])
+        np.testing.assert_allclose(g_function(positions, np.array([4.0, 5.0]), mask), [0, 1])
+
+
+class TestLFunction:
+    def test_csr_gives_identity(self):
+        rng = np.random.default_rng(0)
+        r = np.array([10.0, 20.0, 40.0])
+        ls = [l_function(rng.uniform(0, 300, (300, 2)), (0, 300, 0, 300), r) for _ in range(30)]
+        np.testing.assert_allclose(np.mean(ls, axis=0), r, rtol=0.05)
+
+    def test_zero_inside_exclusion_zone(self):
+        positions = regular_grid(8, 10.0)
+        l = l_function(positions, (-5, 75, -5, 75), np.array([5.0, 9.9]))
+        np.testing.assert_allclose(l, 0.0)
+
+
+class TestDrpEdgeCorrection:
+    def test_csr_profile_recovers_to_one_at_large_r(self):
+        rng = np.random.default_rng(0)
+        bounds = (0, 300, 0, 300)
+        corrected, uncorrected = [], []
+        for _ in range(20):
+            positions = rng.uniform(0, 300, (300, 2))
+            corrected.append(density_recovery_profile(
+                positions, bounds, n_bins=10, max_radius=75, edge_correction=True)[1])
+            uncorrected.append(density_recovery_profile(
+                positions, bounds, n_bins=10, max_radius=75)[1])
+        # Without correction the outer bins lose neighbors beyond the edge.
+        assert np.mean(corrected, axis=0)[-1] == pytest.approx(1.0, abs=0.05)
+        assert np.mean(uncorrected, axis=0)[-1] < 0.85
+
+    def test_unknown_method_raises(self):
+        with pytest.raises(ValueError):
+            drp_effective_radius(regular_grid(5, 10.0), (0, 50, 0, 50), method="bogus")
