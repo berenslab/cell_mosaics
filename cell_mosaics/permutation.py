@@ -15,11 +15,15 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import KDTree
 
-from .metrics import nnd_statistics, voronoi_analysis
+from .metrics import drp_effective_radius, nnd_statistics, voronoi_analysis
 
 STATISTICS = {
     "regularity_index": {"higher_is_more_regular": True, "min_n": 3},
     "cv_area": {"higher_is_more_regular": False, "min_n": 4},
+    # `drp_effective_radius` is biased upward at small n (it maximises a noisy
+    # deficit), but the null is built at the *same* n as the observed group, so
+    # that bias applies to both sides and largely cancels in the p-value.
+    "effective_radius": {"higher_is_more_regular": True, "min_n": 4},
 }
 
 
@@ -44,14 +48,19 @@ def _permute(rng, mask, strata=None):
     return permuted
 
 
-def _group_statistic(positions, interior_mask, statistic, field_bounds):
+def _group_statistic(positions, interior_mask, statistic, field_bounds, statistic_kwargs=None):
+    kwargs = statistic_kwargs or {}
     min_n = STATISTICS[statistic]["min_n"]
     if interior_mask.sum() < min_n or len(positions) < min_n:
         return np.nan
     if statistic == "regularity_index":
-        return nnd_statistics(positions, interior_mask=interior_mask)["regularity_index"]
+        return nnd_statistics(positions, interior_mask=interior_mask, **kwargs)["regularity_index"]
     if statistic == "cv_area":
-        return voronoi_analysis(positions, field_bounds=field_bounds, interior_mask=interior_mask)["cv_area"]
+        return voronoi_analysis(
+            positions, field_bounds=field_bounds, interior_mask=interior_mask, **kwargs)["cv_area"]
+    if statistic == "effective_radius":
+        return drp_effective_radius(
+            positions, field_bounds=field_bounds, interior_mask=interior_mask, **kwargs)["effective_radius"]
     raise ValueError(f"Unknown statistic {statistic!r}; choose from {list(STATISTICS)}")
 
 
@@ -65,6 +74,7 @@ def label_permutation_test(
     field_bounds: tuple[float, float, float, float] | None = None,
     seed: int | None = None,
     strata: np.ndarray | None = None,
+    statistic_kwargs: dict | None = None,
 ) -> dict:
     """Test whether real subgroups in `labels` are more regular than chance.
 
@@ -89,19 +99,23 @@ def label_permutation_test(
     groups : list, optional
         Which label values to test. Defaults to every unique label in
         `labels`.
-    statistic : {'regularity_index', 'cv_area'}
+    statistic : {'regularity_index', 'cv_area', 'effective_radius'}
         'regularity_index' -- NND mean/std (higher = more regular).
         'cv_area' -- Voronoi domain-area CV (lower = more regular).
+        'effective_radius' -- DRP exclusion-zone radius from
+        `drp_effective_radius` (higher = more regular).
     interior_mask : np.ndarray of bool, shape (n,), optional
         Restrict the summary statistic to this subset of `positions` (e.g. a
         stable-sampling crop box) while still computing nearest
-        neighbors/Voronoi adjacency against every position in `positions`,
-        so boundary cells aren't penalized for neighbors excluded by the
-        mask. Defaults to using every position.
+        neighbors/Voronoi adjacency/DRP neighbour counts against every
+        position in `positions`, so boundary cells aren't penalized for
+        neighbors excluded by the mask. Defaults to using every position.
     n_permutations : int
     field_bounds : tuple, optional
-        Forwarded to `voronoi_analysis`; unused (and unnecessary) when an
-        explicit `interior_mask` is given.
+        Forwarded to `voronoi_analysis` / `drp_effective_radius`; for the
+        latter it also sets the density baseline, so it should describe the
+        region `positions` actually covers. Unused (and unnecessary) for
+        `regularity_index`.
     seed : int, optional
     strata : np.ndarray of shape (n,), optional
         Stratum id per position. Labels are then permuted only *within* each
@@ -109,16 +123,20 @@ def label_permutation_test(
         distribution -- use this when sampling density varies across the
         field, otherwise the null is drawn from wherever cells are densest.
         Defaults to permuting globally.
+    statistic_kwargs : dict, optional
+        Extra keyword arguments forwarded to the underlying metric, applied
+        identically to the observed value and every permutation (e.g.
+        `{'n_bins': 20, 'max_radius': 150}` for `effective_radius`).
 
     Returns
     -------
     dict
         `{group: {'observed': float, 'null': np.ndarray, 'p_value': float}}`.
         `p_value` is one-sided: the fraction of permutations at least as
-        regular as the observed value (>= for `regularity_index`, <= for
-        `cv_area`) -- a small p-value means the real group is more regular
-        than chance. `np.nan` where a group (real or permuted) has fewer
-        interior cells than the statistic requires.
+        regular as the observed value (>= for `regularity_index` and
+        `effective_radius`, <= for `cv_area`) -- a small p-value means the
+        real group is more regular than chance. `np.nan` where a group (real
+        or permuted) has fewer interior cells than the statistic requires.
     """
     if statistic not in STATISTICS:
         raise ValueError(f"Unknown statistic {statistic!r}; choose from {list(STATISTICS)}")
@@ -147,12 +165,14 @@ def label_permutation_test(
     results = {}
     for group in groups:
         mask = labels == group
-        observed = _group_statistic(positions[mask], interior_mask[mask], statistic, field_bounds)
+        observed = _group_statistic(
+            positions[mask], interior_mask[mask], statistic, field_bounds, statistic_kwargs)
 
         null = np.empty(n_permutations)
         for p in range(n_permutations):
             perm_mask = _permute(rng, mask, strata)
-            null[p] = _group_statistic(positions[perm_mask], interior_mask[perm_mask], statistic, field_bounds)
+            null[p] = _group_statistic(
+                positions[perm_mask], interior_mask[perm_mask], statistic, field_bounds, statistic_kwargs)
 
         valid = ~np.isnan(null)
         if np.isnan(observed) or not valid.any():

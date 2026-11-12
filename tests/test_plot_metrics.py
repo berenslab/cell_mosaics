@@ -52,3 +52,25 @@ class TestPlotVoronoiTessellation:
         assert len(exterior_scatter.get_offsets()) == 0
         assert len(interior_scatter.get_offsets()) == len(positions)
         plt.close(fig)
+
+
+class TestMonteCarloPlots:
+    def test_simulation_comparison_and_envelope_draw(self):
+        from cell_mosaics.monte_carlo import compare_to_random_simulations, envelope_test
+        from cell_mosaics.plot_metrics import plot_envelope, plot_simulation_comparison
+        from cell_mosaics.simulation import simulate_random_mosaic
+
+        bounds = (0, 200, 0, 200)
+        positions, _ = simulate_random_mosaic(60, bounds, soma_diameter_mean=10.0, seed=0)
+
+        comparison = compare_to_random_simulations(
+            positions, bounds, soma_diameter_mean=10.0, n_simulations=9, seed=0)
+        fig, ax = plot_simulation_comparison(comparison, "nnd_regularity_index")
+        assert ax.get_legend() is not None
+        plt.close(fig)
+
+        envelope = envelope_test(positions, bounds, "L", soma_diameter_mean=10.0,
+                                 n_simulations=9, seed=0)
+        fig, ax = plot_envelope(envelope)
+        assert len(ax.lines) == 2  # simulation mean + real curve
+        plt.close(fig)

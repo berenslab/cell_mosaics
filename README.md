@@ -15,6 +15,13 @@ used to quantify how regularly cells of a given type tile the retina.
   - Nearest-neighbour distance (NND) and the regularity index
   - Density recovery profile (DRP) and its effective radius (exclusion-zone size)
   - Voronoi domain analysis, with boundary-cell exclusion
+  - Packing factor, packing intensity, and the cumulative G and L functions
+- **Comparison with matched random simulations** (Keeley, Eglen & Reese
+  2020) — simulate random mosaics matched in cell number and field and
+  constrained by soma size and/or a minimal-distance (d_min) spacing rule,
+  then rank a real field's regularity indices, effective radius and packing
+  factor among them (Monte Carlo p-values, regularity ratio), or test a
+  spacing model with G/L function envelopes.
 - **Plotting helpers** for every metric above, plus polygon/coverage-map
   visualization, sharing a consistent `(fig, ax)` API so plots can be
   composed or overlaid for comparison.
@@ -52,6 +59,24 @@ print(f"Regularity index: {nnd_stats['regularity_index']:.2f}")
 fig, ax = cm.plot_nnd(nnd_stats)
 ```
 
+Is a mosaic more regular than its somata alone would make it? Compare it
+with 99 random simulations matched in number and field and constrained by
+soma size:
+
+```python
+result = cm.compare_to_random_simulations(
+    positions, field_bounds, soma_diameter_mean=10.0, soma_diameter_sd=1.0)
+vdri = result["voronoi_regularity_index"]
+print(f"VDRI {vdri['observed']:.2f} vs random {vdri['simulated_mean']:.2f}: "
+      f"ratio {vdri['ratio']:.2f}, p = {vdri['p_greater']:.2f}")
+
+# Is a d_min spacing rule sufficient to explain the patterning?
+envelope = cm.envelope_test(positions, field_bounds, "L",
+                            soma_diameter_mean=10.0, soma_diameter_sd=1.0,
+                            dmin_mean=20.0, dmin_sd=2.0)
+fig, ax = cm.plot_envelope(envelope)
+```
+
 See [`notebooks/demo.ipynb`](notebooks/demo.ipynb) for a full walkthrough,
 including the density recovery profile, Voronoi domain analysis, and
 side-by-side comparisons across mosaic types.
@@ -66,6 +91,14 @@ described in:
 > Eglen, S. J. (2012). Cellular spacing: analysis and modelling of retinal
 > mosaics. In N. Le Novère (Ed.), *Computational Systems Neurobiology*
 > (Chapter 12, pp. 365–385). Springer.
+
+The comparison with soma-size-constrained random simulations, the
+border-cell exclusion rules, the packing factor, and the G/L envelope tests
+of spacing rules follow:
+
+> Keeley, P. W., Eglen, S. J., & Reese, B. E. (2020). From random to
+> regular: Variation in the patterning of retinal mosaics. *Journal of
+> Comparative Neurology*, 528, 2135–2160.
 
 ## Development
 
